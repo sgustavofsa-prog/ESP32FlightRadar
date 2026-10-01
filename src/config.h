@@ -63,7 +63,7 @@
 
 // ---- ADS-B Exchange ----
 // Fetch interval and timeout
-#define OPENSKY_FETCH_PERIOD_MS 10000     // 10s para estabilidade na API pública
+#define OPENSKY_FETCH_PERIOD_MS 15000     // 15s para estabilidade na API pública
 #define OPENSKY_HTTP_TIMEOUT_MS 15000
 
 // ---- Boot map background ----

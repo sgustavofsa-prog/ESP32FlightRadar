@@ -5,7 +5,6 @@
 #include <lvgl.h>
 #include <math.h>
 #include <string.h>
-#include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
 namespace {

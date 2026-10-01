@@ -98,7 +98,9 @@ extern const char* g_location_name;
 
 #define HOME_LAT g_home_lat
 #define HOME_LON g_home_lon
-#define RADAR_RADIUS_KM 50.0f
+
+// --- Raio reduzido para 25 km ---
+#define RADAR_RADIUS_KM 25.0f
 
 // ---- Serial baud ----
 #define SERIAL_BAUD 115200

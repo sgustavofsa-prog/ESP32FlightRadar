@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/portmacro.h>
 
 // On-demand route fetch — defined in main.cpp

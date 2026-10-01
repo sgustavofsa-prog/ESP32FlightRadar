@@ -155,7 +155,6 @@ static void display_task(void * /*pvParameters*/) {
 static void network_task(void * /*pvParameters*/) {
     static FlightData tmp_flights[MAX_FLIGHTS];
     static bool map_fetched_this_boot = false;
-    static int consecutive_failures = 0;
 
     for (;;) {
         if (!wifi_is_connected()) {
@@ -175,7 +174,8 @@ static void network_task(void * /*pvParameters*/) {
                 s_force_map_refetch = false;
                 Serial.printf("[map] fetch complete for %s\n", g_location_name);
             } else {
-                Serial.println("[map] fetch failed, will retry");
+                Serial.println("[map] fetch failed, skipping map for now");
+                s_force_map_refetch = false; // Evita loop infinito tentando baixar o mapa
             }
         }
 
@@ -193,8 +193,8 @@ static void network_task(void * /*pvParameters*/) {
         size_t fetched_count = 0;
         ui_set_network_status("UPDATING...");
         bool ok = flight_data_fetch_flights(tmp_flights, MAX_FLIGHTS, &fetched_count);
+        
         if (ok) {
-            consecutive_failures = 0;
             if (xSemaphoreTake(g_flights_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 g_flight_count = fetched_count;
                 for (size_t i = 0; i < fetched_count; ++i) {
@@ -204,15 +204,7 @@ static void network_task(void * /*pvParameters*/) {
             }
             ui_set_network_status(g_location_name);
         } else {
-            consecutive_failures++;
-            if (consecutive_failures >= 3) {
-                Serial.printf("[net] %d consecutive failures, backing off 30s\n", consecutive_failures);
-                ui_set_network_status("NET BACKOFF");
-                vTaskDelay(pdMS_TO_TICKS(30000));
-                consecutive_failures = 0;
-            } else {
-                ui_set_network_status("API RETRY");
-            }
+            ui_set_network_status("API RETRY");
         }
 
         process_route_request_once();

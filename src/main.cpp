@@ -15,6 +15,13 @@
 #include "network/ntp.h"
 #include "network/flight_data.h"
 
+// Definition of active location variables declared in config.h
+float g_home_lat = RADAR_LOCATIONS[0].lat;
+float g_home_lon = RADAR_LOCATIONS[0].lon;
+const char* g_location_name = RADAR_LOCATIONS[0].name;
+static size_t s_current_loc_index = 0;
+static volatile bool s_force_map_refetch = false;
+
 FlightData g_flights[MAX_FLIGHTS];
 size_t g_flight_count = 0;
 SemaphoreHandle_t g_flights_mutex = nullptr;
@@ -36,6 +43,18 @@ static const char *reset_reason_to_str(esp_reset_reason_t reason) {
         case ESP_RST_SDIO:      return "SDIO";
         default:                return "OTHER";
     }
+}
+
+// Function to cycle locations (Santos -> Congonhas -> Guarulhos -> Viracopos)
+static void switch_next_location() {
+    s_current_loc_index = (s_current_loc_index + 1) % RADAR_LOCATIONS_COUNT;
+    g_home_lat = RADAR_LOCATIONS[s_current_loc_index].lat;
+    g_home_lon = RADAR_LOCATIONS[s_current_loc_index].lon;
+    g_location_name = RADAR_LOCATIONS[s_current_loc_index].name;
+
+    Serial.printf("[location] Switched to %s (%.4f, %.4f)\n", g_location_name, g_home_lat, g_home_lon);
+    ui_set_network_status(g_location_name);
+    s_force_map_refetch = true;
 }
 
 // ---- On-demand route request (set by display task, consumed by network task) ----
@@ -119,6 +138,8 @@ static void display_task(void * /*pvParameters*/) {
         int16_t touch_x = 0;
         int16_t touch_y = 0;
         if (cst816s_poll_tap(&touch_x, &touch_y)) {
+            // Touch triggers location switch
+            switch_next_location();
             aircraft_layer_handle_tap(touch_x, touch_y);
         }
 
@@ -147,11 +168,12 @@ static void network_task(void * /*pvParameters*/) {
             ui_set_network_status("WIFI ONLINE");
         }
 
-        if (!map_fetched_this_boot) {
+        if (!map_fetched_this_boot || s_force_map_refetch) {
             ui_set_network_status("FETCH MAP");
             if (map_background_fetch_once()) {
                 map_fetched_this_boot = true;
-                Serial.println("[map] fetch complete for this boot");
+                s_force_map_refetch = false;
+                Serial.printf("[map] fetch complete for %s\n", g_location_name);
             } else {
                 Serial.println("[map] fetch failed, will retry");
             }
@@ -180,7 +202,7 @@ static void network_task(void * /*pvParameters*/) {
                 }
                 xSemaphoreGive(g_flights_mutex);
             }
-            ui_set_network_status("ONLINE");
+            ui_set_network_status(g_location_name);
         } else {
             consecutive_failures++;
             if (consecutive_failures >= 3) {
@@ -197,6 +219,9 @@ static void network_task(void * /*pvParameters*/) {
 
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
+            if (s_force_map_refetch) {
+                break; // Exit delay immediately when user changes location
+            }
             process_route_request_once();
             constexpr uint32_t SLICE_MS = 200;
             vTaskDelay(pdMS_TO_TICKS(SLICE_MS));

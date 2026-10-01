@@ -34,11 +34,6 @@ static const char *reset_reason_to_str(esp_reset_reason_t reason) {
         case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
         case ESP_RST_BROWNOUT:  return "BROWNOUT";
         case ESP_RST_SDIO:      return "SDIO";
-        case ESP_RST_USB:       return "USB";
-        case ESP_RST_JTAG:      return "JTAG";
-        case ESP_RST_EFUSE:     return "EFUSE";
-        case ESP_RST_PWR_GLITCH:return "PWR_GLITCH";
-        case ESP_RST_CPU_LOCKUP:return "CPU_LOCKUP";
         default:                return "OTHER";
     }
 }
@@ -107,8 +102,7 @@ void set_route_request(const char *icao24, const char *callsign) {
 }
 
 // ============================================================
-// Display task — owns all LVGL calls (never call lv_* from
-// another task without holding the LVGL mutex added in M2+)
+// Display task — owns all LVGL calls
 // ============================================================
 static void display_task(void * /*pvParameters*/) {
     display_init();
@@ -130,7 +124,7 @@ static void display_task(void * /*pvParameters*/) {
 
         lv_timer_handler();           // process LVGL events + render dirty areas
         aircraft_layer_update();      // update aircraft dots
-        vTaskDelay(pdMS_TO_TICKS(20)); // ~50 fps ceiling; reduces allocator and LVGL churn
+        vTaskDelay(pdMS_TO_TICKS(20)); // ~50 fps ceiling
     }
 }
 
@@ -172,8 +166,6 @@ static void network_task(void * /*pvParameters*/) {
             }
         }
 
-        // Service any pending route request before starting the ADS-B fetch,
-        // so a tap is never blocked behind a full 15s HTTP timeout.
         process_route_request_once();
 
         size_t fetched_count = 0;
@@ -201,11 +193,8 @@ static void network_task(void * /*pvParameters*/) {
             }
         }
 
-        // Serve tap-triggered route lookups right after each refresh.
         process_route_request_once();
 
-        // Sleep in short slices so route requests are handled quickly,
-        // instead of waiting a full polling period.
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
             process_route_request_once();
@@ -221,7 +210,7 @@ static void network_task(void * /*pvParameters*/) {
 // ============================================================
 void setup() {
     Serial.begin(SERIAL_BAUD);
-    delay(200); // let serial settle
+    delay(200);
 
     Serial.println("[boot] ESP32 Radar — M2");
     const esp_reset_reason_t reason = esp_reset_reason();
@@ -263,7 +252,6 @@ void setup() {
 }
 
 void loop() {
-    // Print heap every 10 s so we can verify there's no memory leak
     static uint32_t last_report = 0;
     if (millis() - last_report >= 10000) {
         last_report = millis();

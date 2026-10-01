@@ -23,6 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio intelhex
 
+      - name: Fix FreeRTOS Semaphore Header
+        run: |
+          sed -i '1s/^/#include "freertos\/semphr.h"\n/' src/display/aircraft_layer.cpp
+
       - name: Build PlatformIO Project
         run: pio run
 

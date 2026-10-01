@@ -25,20 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio intelhex
 
-      - name: Patch C++ Source Files
+      - name: Set Platform Version
         run: |
-          sed -i '1s/^/#include "freertos\/FreeRTOS.h"\n#include "freertos\/semphr.h"\n/' src/display/aircraft_layer.cpp
-          sed -i '1s/^/#include "freertos\/FreeRTOS.h"\n#include "freertos\/task.h"\n/' src/display/ui.cpp
-          python3 -c '
-path = "src/main.cpp"
-with open(path, "r") as f:
-    content = f.read()
-import re
-new_func = "const char* reset_reason_to_str(esp_reset_reason_t r) { return \"UNKNOWN\"; }"
-content = re.sub(r"const char\*\s+reset_reason_to_str\([^)]*\)\s*\{[^}]*\}", new_func, content, flags=re.DOTALL)
-with open(path, "w") as f:
-    f.write(content)
-'
+          sed -i 's/platform = espressif32/platform = espressif32@6.5.0/' platformio.ini
 
       - name: Build PlatformIO Project
         run: pio run

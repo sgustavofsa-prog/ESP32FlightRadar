@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 // ============================================================
 // Board: ESP32-2424S012 (ESP32-C3-MINI-1U + GC9A01 240x240)
 // ============================================================
@@ -73,10 +75,30 @@
 #define GOOGLE_STATIC_MAPS_API_KEY "AIzaSyAoitFE8LLEZqK-9hp6ErO6oFTDHhH_UHg"
 #endif
 
-// ---- Home Location: Santos, SP, Brasil ----
-#define HOME_LAT        -23.9608f   // Centro de Santos / Baixada Santista
-#define HOME_LON        -46.3339f
-#define RADAR_RADIUS_KM  50.0f      // Raio de 50km (cobre Baixada Santista e chegadas de SP)
+// ---- Dynamic Radar Locations (Santos, Congonhas, Guarulhos, Viracopos) ----
+struct RadarLocation {
+    const char* name;
+    float lat;
+    float lon;
+};
+
+static const RadarLocation RADAR_LOCATIONS[] = {
+    {"SANTOS",    -23.9608f, -46.3339f},
+    {"CONGONHAS", -23.6261f, -46.6564f},
+    {"GUARULHOS", -23.4356f, -46.4731f},
+    {"VIRACOPOS", -22.9575f, -47.1383f}
+};
+
+constexpr size_t RADAR_LOCATIONS_COUNT = sizeof(RADAR_LOCATIONS) / sizeof(RADAR_LOCATIONS[0]);
+
+// Global variables for active coordinates (declared in main.cpp)
+extern float g_home_lat;
+extern float g_home_lon;
+extern const char* g_location_name;
+
+#define HOME_LAT g_home_lat
+#define HOME_LON g_home_lon
+#define RADAR_RADIUS_KM 50.0f
 
 // ---- Serial baud ----
 #define SERIAL_BAUD 115200

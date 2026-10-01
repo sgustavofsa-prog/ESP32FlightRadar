@@ -55,29 +55,28 @@
 
 // ---- NTP ----
 #define NTP_SERVER_1        "pool.ntp.org"
-#define NTP_SERVER_2        "time.nist.gov"
-#define NTP_GMT_OFFSET_SEC  0
+#define NTP_SERVER_2        "a.st1.ntp.br"
+#define NTP_GMT_OFFSET_SEC  (-3 * 3600)  // Horário de Brasília (GMT-3)
 #define NTP_DAYLIGHT_OFFSET_SEC 0
 
 // ---- ADS-B Exchange ----
-// No rate limits, community-run global ADS-B network
-#define OPENSKY_FETCH_PERIOD_MS 5000
+// Fetch interval and timeout
+#define OPENSKY_FETCH_PERIOD_MS 10000     // 10s para estabilidade na API pública
 #define OPENSKY_HTTP_TIMEOUT_MS 15000
 
 // ---- Boot map background ----
 #define MAP_FETCH_ON_BOOT 1
 #define MAP_HTTP_TIMEOUT_MS 20000
-#define MAP_MAX_JPEG_BYTES 20480    // 20KB — enough for 120x120 JPEG
+#define MAP_MAX_JPEG_BYTES 20480    // 20KB — suficiente para imagem de mapa 120x120
 
 #ifndef GOOGLE_STATIC_MAPS_API_KEY
 #define GOOGLE_STATIC_MAPS_API_KEY "AIzaSyAoitFE8LLEZqK-9hp6ErO6oFTDHhH_UHg"
 #endif
 
-// ---- Home location placeholder (set before flashing) ----
-// These define the radar center. Replace with your actual coordinates.
-#define HOME_LAT   51.5051316f   // Vaarsvelden, Best, Netherlands
-#define HOME_LON    5.3728435f
-#define RADAR_RADIUS_KM  20.0f
+// ---- Home Location: Santos, SP, Brasil ----
+#define HOME_LAT        -23.9608f   // Centro de Santos / Baixada Santista
+#define HOME_LON        -46.3339f
+#define RADAR_RADIUS_KM  50.0f      // Raio de 50km (cobre Baixada Santista e chegadas de SP)
 
 // ---- Serial baud ----
 #define SERIAL_BAUD 115200

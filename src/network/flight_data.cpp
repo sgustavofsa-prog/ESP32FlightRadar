@@ -4,41 +4,10 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <WiFiClientSecure.h>
 #include <math.h>
 #include <string.h>
 
 namespace {
-
-constexpr uint32_t ROUTE_CACHE_TTL_MS = 10UL * 60UL * 1000UL;
-constexpr uint32_t ROUTE_RETRY_MS = 90UL * 1000UL;
-constexpr size_t ROUTE_CACHE_SIZE = MAX_FLIGHTS;
-
-struct RouteCacheEntry {
-    char icao24[9];
-    char departure[5];
-    char arrival[5];
-    char callsign_iata[9];
-    uint32_t updated_ms;
-    bool valid;
-};
-
-static RouteCacheEntry s_route_cache[ROUTE_CACHE_SIZE];
-
-static String build_url() {
-    const float lat = g_home_lat;
-    const float lon = g_home_lon;
-    const int dist_km = (int)RADAR_RADIUS_KM;
-
-    // Alterado para ADSB.one via HTTPS
-    String url = "https://api.adsb.one/v2/lat/";
-    url += String(lat, 4);
-    url += "/lon/";
-    url += String(lon, 4);
-    url += "/dist/";
-    url += String(dist_km);
-    return url;
-}
 
 static void safe_copy(char *dst, size_t dst_size, const char *src) {
     if (dst_size == 0 || dst == nullptr) return;
@@ -50,30 +19,6 @@ static void safe_copy(char *dst, size_t dst_size, const char *src) {
     dst[dst_size - 1] = '\0';
 }
 
-static int find_cache_slot(const char *icao24) {
-    for (size_t i = 0; i < ROUTE_CACHE_SIZE; ++i) {
-        if (strncmp(s_route_cache[i].icao24, icao24, sizeof(s_route_cache[i].icao24)) == 0) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static bool cache_lookup(const char *icao24, char *dep, size_t dep_size, char *arr, size_t arr_size,
-                         char *cs_iata, size_t cs_iata_size) {
-    const int slot = find_cache_slot(icao24);
-    if (slot < 0 || !s_route_cache[slot].valid) return false;
-
-    if ((millis() - s_route_cache[slot].updated_ms) > ROUTE_CACHE_TTL_MS) return false;
-
-    safe_copy(dep, dep_size, s_route_cache[slot].departure);
-    safe_copy(arr, arr_size, s_route_cache[slot].arrival);
-    if (cs_iata != nullptr && cs_iata_size > 0) {
-        safe_copy(cs_iata, cs_iata_size, s_route_cache[slot].callsign_iata);
-    }
-    return dep[0] != '\0' && arr[0] != '\0';
-}
-
 } // namespace
 
 bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, size_t *out_count) {
@@ -83,95 +28,98 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
 
     *out_count = 0;
 
-    WiFiClientSecure client;
-    client.setInsecure(); // Ignora a verificação estrita de certificado SSL para evitar estouro de memória
+    // Converte o raio de km em delta de graus de latitude/longitude (~50km)
+    const float lat_delta = RADAR_RADIUS_KM / 111.0f;
+    const float lon_delta = RADAR_RADIUS_KM / (111.0f * cosf(g_home_lat * 0.01745329252f));
+
+    const float lat_max = g_home_lat + lat_delta;
+    const float lat_min = g_home_lat - lat_delta;
+    const float lon_min = g_home_lon - lon_delta;
+    const float lon_max = g_home_lon + lon_delta;
+
+    // URL leve do Flightradar24 sobre HTTP simples (sem overhead de TLS/SSL)
+    char url[256];
+    snprintf(url, sizeof(url),
+             "http://data-cloud.flightradar24.com/zones/fcgi/feed.json?bounds=%.4f,%.4f,%.4f,%.4f&faa=1&mlat=1&flarm=1&adsb=1&gnd=0&air=1",
+             lat_max, lat_min, lon_min, lon_max);
 
     HTTPClient http;
-    const String url = build_url();
-    Serial.printf("[adsb] GET %s\n", url.c_str());
+    Serial.printf("[fr24] GET %s\n", url);
 
-    http.setReuse(false); // Força o fecho de socket ao finalizar
-    http.setTimeout(10000);
+    http.setReuse(false);
+    http.setTimeout(8000);
 
-    if (!http.begin(client, url)) {
-        Serial.println("[adsb] HTTP begin failed");
+    if (!http.begin(url)) {
+        Serial.println("[fr24] HTTP begin failed");
         return false;
     }
 
-    // Configura User-Agent para evitar descarte por filtros antispam
-    http.setUserAgent("ESP32-Radar-Display/1.0");
+    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
 
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[adsb] HTTP error code: %d\n", code);
+        Serial.printf("[fr24] HTTP error code: %d\n", code);
         http.end();
-        client.stop();
         return false;
     }
 
-    // Filtro para extrair apenas as chaves necessárias do JSON e poupar RAM
-    JsonDocument filter;
-    filter["ac"][0]["hex"] = true;
-    filter["ac"][0]["flight"] = true;
-    filter["ac"][0]["lat"] = true;
-    filter["ac"][0]["lon"] = true;
-    filter["ac"][0]["alt_baro"] = true;
-    filter["ac"][0]["alt"] = true;
-    filter["ac"][0]["gs"] = true;
-    filter["ac"][0]["track"] = true;
-    filter["ac"][0]["t"] = true;
-
+    // Leitura direta do Stream para evitar alocar a string inteira na RAM
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    DeserializationError err = deserializeJson(doc, http.getStream());
     http.end();
-    client.stop();
 
     if (err) {
-        Serial.printf("[adsb] JSON parse error: %s\n", err.c_str());
+        Serial.printf("[fr24] JSON parse error: %s\n", err.c_str());
         return false;
     }
 
-    JsonArray ac = doc["ac"].as<JsonArray>();
-    if (ac.isNull()) {
-        Serial.println("[adsb] No 'ac' array found");
-        return true;
-    }
-
+    JsonObject root = doc.as<JsonObject>();
     size_t n = 0;
-    for (JsonVariant v : ac) {
+
+    for (JsonPair kv : root) {
         if (n >= out_capacity) break;
 
-        JsonObject obj = v.as<JsonObject>();
-        if (obj.isNull() || obj["lat"].isNull() || obj["lon"].isNull()) continue;
+        // O Flightradar24 envia as aeronaves como chaves de objeto (ex: "381b8f10"), ignoramos chaves de sistema como "full_count"
+        const char *key = kv.key().c_str();
+        if (strcmp(key, "full_count") == 0 || strcmp(key, "version") == 0 || strcmp(key, "stats") == 0) {
+            continue;
+        }
+
+        JsonArray arr = kv.value().as<JsonArray>();
+        if (arr.isNull() || arr.size() < 14) continue;
 
         FlightData f{};
-        const char *hex = obj["hex"].isNull() ? "" : obj["hex"].as<const char*>();
-        safe_copy(f.icao24, sizeof(f.icao24), hex);
-        safe_copy(f.callsign, sizeof(f.callsign), obj["flight"].isNull() ? "" : obj["flight"].as<const char*>());
+        
+        // Formato da array do FR24:
+        // arr[0] = icao24 hex
+        // arr[1] = lat
+        // arr[2] = lon
+        // arr[3] = heading
+        // arr[4] = altitude (pés)
+        // arr[5] = velocidade (knots)
+        // arr[13] = callsign
+        
+        const char *hex = arr[0].as<const char*>();
+        safe_copy(f.icao24, sizeof(f.icao24), hex ? hex : "");
 
-        f.lat = obj["lat"].as<float>();
-        f.lon = obj["lon"].as<float>();
+        f.lat = arr[1].as<float>();
+        f.lon = arr[2].as<float>();
+        f.heading_deg = arr[3].as<float>();
 
-        float alt_ft = 0.0f;
-        if (!obj["alt_baro"].isNull()) alt_ft = obj["alt_baro"].as<float>();
-        else if (!obj["alt"].isNull()) alt_ft = obj["alt"].as<float>();
+        float alt_ft = arr[4].as<float>();
         f.altitude_m = alt_ft * 0.3048f;
 
-        f.speed_mps = obj["gs"].isNull() ? 0.0f : (obj["gs"].as<float>() * 0.51444f);
-        f.heading_deg = obj["track"].isNull() ? 0.0f : obj["track"].as<float>();
+        float speed_kts = arr[5].as<float>();
+        f.speed_mps = speed_kts * 0.51444f;
 
-        char dep_buf[5] = {0}, arr_buf[5] = {0}, iata_buf[9] = {0};
-        if (cache_lookup(f.icao24, dep_buf, sizeof(dep_buf), arr_buf, sizeof(arr_buf), iata_buf, sizeof(iata_buf))) {
-            safe_copy(f.departure, sizeof(f.departure), dep_buf);
-            safe_copy(f.arrival, sizeof(f.arrival), arr_buf);
-            safe_copy(f.callsign_iata, sizeof(f.callsign_iata), iata_buf);
-        }
+        const char *callsign = arr[13].as<const char*>();
+        safe_copy(f.callsign, sizeof(f.callsign), callsign ? callsign : "");
 
         out_flights[n++] = f;
     }
 
     *out_count = n;
-    Serial.printf("[adsb] Successfully parsed %u flights\n", (unsigned)n);
+    Serial.printf("[fr24] Successfully parsed %u flights\n", (unsigned)n);
     return true;
 }
 

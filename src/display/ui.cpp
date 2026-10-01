@@ -1,3 +1,5 @@
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "ui.h"
 #include "../config.h"
 #include <lvgl.h>

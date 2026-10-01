@@ -30,8 +30,8 @@ static String build_url() {
     const float lon = g_home_lon;
     const int dist_km = (int)RADAR_RADIUS_KM;
 
-    // Usa endpoint v2 com limitação de raio para manter o JSON leve
-    String url = "http://api.adsb.lol/v2/lat/";
+    // Alterado para ADSB.one via HTTPS
+    String url = "https://api.adsb.one/v2/lat/";
     url += String(lat, 4);
     url += "/lon/";
     url += String(lon, 4);
@@ -83,26 +83,33 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
 
     *out_count = 0;
 
+    WiFiClientSecure client;
+    client.setInsecure(); // Ignora a verificação estrita de certificado SSL para evitar estouro de memória
+
     HTTPClient http;
     const String url = build_url();
     Serial.printf("[adsb] GET %s\n", url.c_str());
 
-    http.setReuse(false); // Força fecho de socket para evitar travamento de conexão
-    http.setTimeout(8000);
+    http.setReuse(false); // Força o fecho de socket ao finalizar
+    http.setTimeout(10000);
 
-    if (!http.begin(url)) {
+    if (!http.begin(client, url)) {
         Serial.println("[adsb] HTTP begin failed");
         return false;
     }
+
+    // Configura User-Agent para evitar descarte por filtros antispam
+    http.setUserAgent("ESP32-Radar-Display/1.0");
 
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
         Serial.printf("[adsb] HTTP error code: %d\n", code);
         http.end();
+        client.stop();
         return false;
     }
 
-    // Usa um filtro para extrair APENAS os campos necessários e economizar RAM na desserialização
+    // Filtro para extrair apenas as chaves necessárias do JSON e poupar RAM
     JsonDocument filter;
     filter["ac"][0]["hex"] = true;
     filter["ac"][0]["flight"] = true;
@@ -117,6 +124,7 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
+    client.stop();
 
     if (err) {
         Serial.printf("[adsb] JSON parse error: %s\n", err.c_str());
@@ -126,7 +134,7 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
     JsonArray ac = doc["ac"].as<JsonArray>();
     if (ac.isNull()) {
         Serial.println("[adsb] No 'ac' array found");
-        return true; // Retorna true (sucesso), apenas sem aeronaves no raio
+        return true;
     }
 
     size_t n = 0;
@@ -174,5 +182,5 @@ bool flight_data_fetch_route(const char *icao24, const char *callsign,
     if (dep != nullptr && dep_size > 0) dep[0] = '\0';
     if (arr != nullptr && arr_size > 0) arr[0] = '\0';
     if (callsign_iata != nullptr && callsign_iata_size > 0) callsign_iata[0] = '\0';
-    return false; // Desativado temporariamente para isolar estabilidade de rede
+    return false;
 }

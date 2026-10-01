@@ -26,6 +26,7 @@ jobs:
       - name: Fix FreeRTOS Headers Order
         run: |
           sed -i '1s/^/#include "freertos\/FreeRTOS.h"\n#include "freertos\/semphr.h"\n/' src/display/aircraft_layer.cpp
+          sed -i '1s/^/#include "freertos\/FreeRTOS.h"\n#include "freertos\/task.h"\n/' src/display/ui.cpp
 
       - name: Build PlatformIO Project
         run: pio run

@@ -13,7 +13,6 @@ namespace {
 constexpr uint32_t ROUTE_CACHE_TTL_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t ROUTE_RETRY_MS = 90UL * 1000UL;
 constexpr size_t ROUTE_CACHE_SIZE = MAX_FLIGHTS;
-constexpr size_t ROUTE_FETCHES_PER_CYCLE = 1;
 
 struct RouteCacheEntry {
     char icao24[9];
@@ -33,8 +32,9 @@ static float clampf(float v, float lo, float hi) {
 }
 
 static String build_url() {
-    const float lat = HOME_LAT;
-    const float lon = HOME_LON;
+    // Uses active dynamic global coordinates (g_home_lat, g_home_lon)
+    const float lat = g_home_lat;
+    const float lon = g_home_lon;
     const int dist_km = (int)RADAR_RADIUS_KM;
 
     // adsb.lol supports plain HTTP — no TLS overhead on the frequent polling call.
@@ -49,7 +49,6 @@ static String build_url() {
 
 static String build_route_url(const char *callsign) {
     String url = "https://api.adsbdb.com/v0/callsign/";
-    // adsbdb expects uppercase callsign with no whitespace
     for (const char *p = callsign; *p; ++p) {
         const char c = *p;
         if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
@@ -125,7 +124,7 @@ static void infer_kind(const char *type_code, const char *desc, char *out_kind, 
     }
 
     if (starts_with(type_up, "H") || starts_with(type_up, "R22") || starts_with(type_up, "R44") ||
-        starts_with(type_up, "R66") || starts_with(type_up, "EC") || starts_with(type_up, "AS") ||
+        starts_with(type_up, "R66") || starts_up(type_up, "EC") || starts_with(type_up, "AS") ||
         starts_with(type_up, "BK") || starts_with(type_up, "AW") || starts_with(type_up, "B06") ||
         starts_with(type_up, "B47")) {
         safe_copy(out_kind, out_kind_size, "HELI");
@@ -198,7 +197,7 @@ static bool fetch_route_for_callsign(const char *callsign,
         return false;
     }
 
-    http.setTimeout(OPENSKY_HTTP_TIMEOUT_MS);
+    http.setTimeout(5000); // Strict timeout on route calls
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
         Serial.printf("[route] HTTP %d\n", code);
@@ -217,8 +216,6 @@ static bool fetch_route_for_callsign(const char *callsign,
         return false;
     }
 
-    // adsbdb response includes both IATA and ICAO codes.
-    // Prefer IATA (3-letter) for display, fallback to ICAO (4-letter).
     JsonObject flightroute = doc["response"]["flightroute"].as<JsonObject>();
     if (flightroute.isNull()) {
         return false;
@@ -305,10 +302,10 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
         return false;
     }
 
-    http.setTimeout(OPENSKY_HTTP_TIMEOUT_MS);
+    http.setTimeout(10000);
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[adsbx] HTTP %d\n", code);
+        Serial.printf("[adsb] HTTP %d\n", code);
         http.end();
         return false;
     }
@@ -325,14 +322,13 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
         return false;
     }
 
-    // API response: {"ac": [{"hex":"...", "flight":"...", "lat":..., "lon":..., "alt_baro":..., "gs":..., "track":...}, ...]}
     JsonArray ac = doc["ac"].as<JsonArray>();
     if (ac.isNull()) {
-        Serial.println("[adsbx] no ac array");
+        Serial.println("[adsb] no ac array");
         return true;
     }
 
-    Serial.printf("[adsbx] parsing %u aircraft (capacity=%u)\n", (unsigned)ac.size(), (unsigned)out_capacity);
+    Serial.printf("[adsb] parsing %u aircraft (capacity=%u)\n", (unsigned)ac.size(), (unsigned)out_capacity);
 
     size_t n = 0;
     for (JsonVariant v : ac) {
@@ -350,7 +346,6 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
         }
 
         FlightData f{};
-        // Some feeds use "hex" while others use "icao".
         const char *hex = obj["hex"].isNull() ? nullptr : obj["hex"].as<const char*>();
         const char *icao = obj["icao"].isNull() ? nullptr : obj["icao"].as<const char*>();
         safe_copy(f.icao24, sizeof(f.icao24), (hex != nullptr) ? hex : ((icao != nullptr) ? icao : ""));
@@ -365,7 +360,7 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
 
         f.lat = obj["lat"].as<float>();
         f.lon = obj["lon"].as<float>();
-        // Altitude can be provided as alt_baro (ft) or alt (ft).
+
         float alt_ft = 0.0f;
         if (!obj["alt_baro"].isNull()) {
             alt_ft = obj["alt_baro"].as<float>();
@@ -373,7 +368,6 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
             alt_ft = obj["alt"].as<float>();
         }
         f.altitude_m = alt_ft * 0.3048f;
-        // Ground speed in knots, convert to m/s
         f.speed_mps = obj["gs"].isNull() ? 0.0f : (obj["gs"].as<float>() * 0.51444f);
         if (!obj["track"].isNull()) {
             f.heading_deg = obj["track"].as<float>();
@@ -381,7 +375,6 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
             f.heading_deg = obj["calc_track"].isNull() ? 0.0f : obj["calc_track"].as<float>();
         }
 
-        // Keep route info stable across ADS-B refresh cycles.
         char dep_buf[5] = {0};
         char arr_buf[5] = {0};
         char iata_buf[9] = {0};
@@ -412,9 +405,9 @@ bool flight_data_fetch_flights(FlightData *out_flights, size_t out_capacity, siz
 }
 
 bool flight_data_fetch_route(const char *icao24, const char *callsign,
-                         char *dep, size_t dep_size,
-                         char *arr, size_t arr_size,
-                         char *callsign_iata, size_t callsign_iata_size) {
+                             char *dep, size_t dep_size,
+                             char *arr, size_t arr_size,
+                             char *callsign_iata, size_t callsign_iata_size) {
     if (dep == nullptr || arr == nullptr || dep_size == 0 || arr_size == 0) {
         return false;
     }
@@ -438,14 +431,14 @@ bool flight_data_fetch_route(const char *icao24, const char *callsign,
     char arr_buf[5] = {0};
     char iata_buf[9] = {0};
     if (fetch_route_for_callsign(callsign, dep_buf, sizeof(dep_buf), arr_buf, sizeof(arr_buf),
-                                 iata_buf, sizeof(iata_buf))) {
+                                   iata_buf, sizeof(iata_buf))) {
         cache_store(icao24, dep_buf, arr_buf, iata_buf);
         safe_copy(dep, dep_size, dep_buf);
         safe_copy(arr, arr_size, arr_buf);
         if (callsign_iata != nullptr && callsign_iata_size > 0) {
             safe_copy(callsign_iata, callsign_iata_size, iata_buf);
         }
-        Serial.printf("[opensky] route %s: %s -> %s (iata=%s)\n", callsign, dep_buf, arr_buf, iata_buf);
+        Serial.printf("[route] route %s: %s -> %s (iata=%s)\n", callsign, dep_buf, arr_buf, iata_buf);
         return true;
     } else {
         cache_mark_attempt(icao24);

@@ -13,30 +13,25 @@ static bool s_map_needs_install = false;
 static lv_obj_t *s_map_img_obj = nullptr;
 
 bool map_background_fetch_once() {
-    // Delta de graus para o raio configurado
-    const float lat_delta = RADAR_RADIUS_KM / 111.0f;
-    const float lon_delta = RADAR_RADIUS_KM / (111.0f * cosf(g_home_lat * 0.01745329252f));
-
-    // URL do servidor de mapas/tiles estáticos baseado na coordenada ativa
+    // URL de servidor gratuito e leve de tiles estáticos do OpenStreetMap / CartoDB
+    // Utiliza as variáveis globais g_home_lat e g_home_lon
     char url[384];
     snprintf(url, sizeof(url),
-             "https://maps.googleapis.com/maps/api/staticmap?center=%.4f,%.4f&zoom=10&size=240x240&maptype=roadmap&style=feature:all|element:labels|visibility:off&key=YOUR_API_KEY",
+             "https://staticmap.openstreetmap.de/staticmap.php?center=%.4f,%.4f&zoom=10&size=240x240&maptype=mapnik",
              g_home_lat, g_home_lon);
 
-    // Se estiver usando o OpenStreetMap / CartoDB estático:
-    // snprintf(url, sizeof(url), "https://basemaps.cartocdn.com/rastertiles/dark_nolabels/10/%.0f/%.0f.png", ...);
-
     WiFiClientSecure client;
-    client.setInsecure();
+    client.setInsecure(); // Desativa validação TLS para poupar RAM
 
     HTTPClient http;
-    Serial.printf("[map] Baixando novo mapa para %s: %s\n", g_location_name, url);
+    Serial.printf("[map] Baixando mapa para %s: %s\n", g_location_name, url);
 
     if (!http.begin(client, url)) {
         Serial.println("[map] HTTP begin falhou");
         return false;
     }
 
+    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
     http.setTimeout(10000);
     const int code = http.GET();
 
@@ -49,12 +44,13 @@ bool map_background_fetch_once() {
 
     int len = http.getSize();
     if (len <= 0) {
+        Serial.println("[map] Tamanho de resposta invalido");
         http.end();
         client.stop();
         return false;
     }
 
-    // Libera a memória do mapa anterior
+    // Liberta a memória do mapa anterior se existir
     if (s_map_png_data != nullptr) {
         free(s_map_png_data);
         s_map_png_data = nullptr;
@@ -63,7 +59,7 @@ bool map_background_fetch_once() {
 
     s_map_png_data = (uint8_t *)malloc(len);
     if (!s_map_png_data) {
-        Serial.println("[map] Sem RAM suficiente para o buffer do mapa");
+        Serial.println("[map] Sem RAM suficiente para alocar o novo mapa");
         http.end();
         client.stop();
         return false;
@@ -71,7 +67,9 @@ bool map_background_fetch_once() {
 
     WiFiClient *stream = http.getStreamPtr();
     size_t total_read = 0;
-    while (http.connected() && total_read < (size_t)len) {
+    uint32_t start_time = millis();
+
+    while (http.connected() && total_read < (size_t)len && (millis() - start_time < 8000)) {
         size_t avail = stream->available();
         if (avail) {
             int r = stream->readBytes(s_map_png_data + total_read, avail);
@@ -85,7 +83,7 @@ bool map_background_fetch_once() {
     client.stop();
 
     s_map_png_size = total_read;
-    s_map_needs_install = true; // Sinaliza à display_task para atualizar a imagem no LVGL
+    s_map_needs_install = true; // Sinaliza à task de ecrã para atualizar a imagem no LVGL
     Serial.printf("[map] Download concluido (%d bytes) para %s\n", (int)total_read, g_location_name);
     return true;
 }
@@ -97,26 +95,25 @@ void map_background_try_install() {
 
     s_map_needs_install = false;
 
-    // Se já existir um objeto de imagem na tela, limpa a memória do LVGL
+    // Se já existir um objeto de imagem no ecrã, remove o antigo
     if (s_map_img_obj != nullptr) {
         lv_obj_del(s_map_img_obj);
         s_map_img_obj = nullptr;
     }
 
-    // Recria o objeto da imagem de fundo com o novo buffer PNG/BMP baixado
+    // Recria o objeto da imagem de fundo no LVGL
     static lv_img_dsc_t img_dsc;
     img_dsc.header.always_zero = 0;
     img_dsc.header.w = 240;
     img_dsc.header.h = 240;
     img_dsc.data_size = s_map_png_size;
-    img_dsc.header.cf = LV_IMG_CF_TRUE_COLOR; // Ajuste conforme o formato do seu decodificador
+    img_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
     img_dsc.data = s_map_png_data;
 
     s_map_img_obj = lv_img_create(lv_scr_act());
     lv_img_set_src(s_map_img_obj, &img_dsc);
-    lv_obj_move_background(s_map_img_obj); // Envia o mapa para a camada do fundo
+    lv_obj_move_background(s_map_img_obj); // Move o mapa para a camada de fundo do radar
 
-    // Força a redesenho imediato do LVGL
-    lv_obj_invalidate(lv_scr_act());
-    Serial.println("[map] Novo mapa instalado com sucesso no display!");
+    lv_obj_invalidate(lv_scr_act()); // Força o redesenho da tela
+    Serial.println("[map] Novo mapa instalado com sucesso!");
 }

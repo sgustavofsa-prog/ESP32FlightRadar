@@ -15,6 +15,9 @@
 #include "network/ntp.h"
 #include "network/flight_data.h"
 
+// Pino do Botão Físico Lateral (GPIO 0 na maioria das placas ESP32 / ESP32-C3)
+#define BTN_PIN 0
+
 // Definition of active location variables declared in config.h
 float g_home_lat = RADAR_LOCATIONS[0].lat;
 float g_home_lon = RADAR_LOCATIONS[0].lon;
@@ -57,7 +60,7 @@ static void switch_next_location() {
     s_force_map_refetch = true;
 }
 
-// ---- On-demand route request (set by display task, consumed by network task) ----
+// ---- On-demand route request ----
 static portMUX_TYPE s_route_req_mux = portMUX_INITIALIZER_UNLOCKED;
 static char s_route_req_icao24[9]    = {0};
 static char s_route_req_callsign[9]  = {0};
@@ -81,17 +84,9 @@ static void process_route_request_once() {
     char cs_iata[9] = {0};
     const bool route_ok = flight_data_fetch_route(req_icao24, req_callsign, dep, sizeof(dep), arr, sizeof(arr),
                                                   cs_iata, sizeof(cs_iata));
-    Serial.printf("[route] req icao24=%s callsign=%s ok=%d dep=%s arr=%s iata=%s\n",
-                  req_icao24,
-                  req_callsign,
-                  route_ok ? 1 : 0,
-                  dep[0] ? dep : "-",
-                  arr[0] ? arr : "-",
-                  cs_iata[0] ? cs_iata : "-");
 
     if (dep[0] != '\0' && arr[0] != '\0') {
         if (xSemaphoreTake(g_flights_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            bool updated = false;
             for (size_t i = 0; i < g_flight_count; ++i) {
                 if (strncmp(g_flights[i].icao24, req_icao24, 8) == 0) {
                     strncpy(g_flights[i].departure, dep, sizeof(g_flights[i].departure) - 1);
@@ -100,12 +95,10 @@ static void process_route_request_once() {
                     g_flights[i].arrival[sizeof(g_flights[i].arrival) - 1] = '\0';
                     strncpy(g_flights[i].callsign_iata, cs_iata, sizeof(g_flights[i].callsign_iata) - 1);
                     g_flights[i].callsign_iata[sizeof(g_flights[i].callsign_iata) - 1] = '\0';
-                    updated = true;
                     break;
                 }
             }
             xSemaphoreGive(g_flights_mutex);
-            Serial.printf("[route] apply icao24=%s updated=%d\n", req_icao24, updated ? 1 : 0);
         }
     }
 }
@@ -121,7 +114,7 @@ void set_route_request(const char *icao24, const char *callsign) {
 }
 
 // ============================================================
-// Display task — owns all LVGL calls
+// Display task — Monitora botão físico (GPIO 0) + Toque
 // ============================================================
 static void display_task(void * /*pvParameters*/) {
     display_init();
@@ -129,29 +122,43 @@ static void display_task(void * /*pvParameters*/) {
     aircraft_layer_init();
     const bool touch_ok = cst816s_init();
 
-    Serial.println("[display] LVGL running");
-    Serial.printf("[display] touch=%s\n", touch_ok ? "ok" : "offline");
+    // Configura o pino do botão físico com Pull-Up interno
+    pinMode(BTN_PIN, INPUT_PULLUP);
 
-    uint32_t last_touch_ms = 0;
+    Serial.println("[display] LVGL running");
+    Serial.printf("[display] touch=%s | Button GPIO %d ready\n", touch_ok ? "ok" : "offline", BTN_PIN);
+
+    uint32_t last_btn_ms = 0;
+    bool last_btn_state = HIGH;
 
     for (;;) {
         map_background_try_install();
 
-        int16_t touch_x = 0;
-        int16_t touch_y = 0;
+        // 1. Leitura do Botão Físico (GPIO 0)
+        bool btn_state = digitalRead(BTN_PIN);
+        const uint32_t now = millis();
+
+        // Quando o botão é pressionado (vai para LOW / 0)
+        if (btn_state == LOW && last_btn_state == HIGH && (now - last_btn_ms > 400)) {
+            last_btn_ms = now;
+            Serial.println("[button] Botao fisico pressionado -> Alternando aeroporto!");
+            switch_next_location();
+        }
+        last_btn_state = btn_state;
+
+        // 2. Leitura opcional do Toque na Tela (mantida caso use o ecrã táctil)
+        int16_t touch_x = 0, touch_y = 0;
         if (cst816s_poll_tap(&touch_x, &touch_y)) {
-            const uint32_t now = millis();
-            // Debounce: exige intervalo minimo de 600ms para alternar aeroportos
-            if (now - last_touch_ms > 600) {
-                last_touch_ms = now;
-                Serial.printf("[touch] Tap em (%d, %d) -> Mudando localizacao\n", touch_x, touch_y);
+            if (now - last_btn_ms > 600) {
+                last_btn_ms = now;
+                Serial.printf("[touch] Toque em (%d, %d) -> Alternando aeroporto!\n", touch_x, touch_y);
                 switch_next_location();
             }
         }
 
-        lv_timer_handler();           // process LVGL events + render dirty areas
-        aircraft_layer_update();      // update aircraft dots
-        vTaskDelay(pdMS_TO_TICKS(20)); // ~50 fps ceiling
+        lv_timer_handler();           // processa eventos do LVGL
+        aircraft_layer_update();      // atualiza os aviões no ecrã
+        vTaskDelay(pdMS_TO_TICKS(20)); // ~50 fps
     }
 }
 
@@ -178,10 +185,10 @@ static void network_task(void * /*pvParameters*/) {
             if (map_background_fetch_once()) {
                 map_fetched_this_boot = true;
                 s_force_map_refetch = false;
-                Serial.printf("[map] fetch complete for %s\n", g_location_name);
+                Serial.printf("[map] Mapa carregado para %s\n", g_location_name);
             } else {
-                Serial.println("[map] fetch failed, skipping map for now");
-                s_force_map_refetch = false; // Evita loop infinito tentando baixar o mapa
+                Serial.println("[map] Falha no download do mapa, mantendo radar ativo");
+                s_force_map_refetch = false;
             }
         }
 
@@ -218,7 +225,7 @@ static void network_task(void * /*pvParameters*/) {
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
             if (s_force_map_refetch) {
-                break; // Exit delay immediately when user changes location
+                break; // Interrompe o delay de 15s imediatamente ao pressionar o botão
             }
             process_route_request_once();
             constexpr uint32_t SLICE_MS = 200;
@@ -290,9 +297,6 @@ void loop() {
                       (unsigned long)largest_block,
                       (unsigned long)display_hwm,
                       (unsigned long)network_hwm);
-        Serial.printf("[heap] free=%lu  min_ever=%lu\n",
-                      (unsigned long)esp_get_free_heap_size(),
-                      (unsigned long)esp_get_minimum_free_heap_size());
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

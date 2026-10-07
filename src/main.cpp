@@ -15,8 +15,9 @@
 #include "network/ntp.h"
 #include "network/flight_data.h"
 
-// Pino do Botão Físico Lateral (GPIO 0 na maioria das placas ESP32 / ESP32-C3)
-#define BTN_PIN 0
+// Pinos físicos de botão comuns em placas ESP32-C3 / ESP32-2424S012
+#define BTN_BOOT_C3 9
+#define BTN_BOOT_ALT 0
 
 // Definition of active location variables declared in config.h
 float g_home_lat = RADAR_LOCATIONS[0].lat;
@@ -114,7 +115,7 @@ void set_route_request(const char *icao24, const char *callsign) {
 }
 
 // ============================================================
-// Display task — Monitora botão físico (GPIO 0) + Toque
+// Display task — Botões Físicos para Troca + Touch para Aeronaves
 // ============================================================
 static void display_task(void * /*pvParameters*/) {
     display_init();
@@ -122,42 +123,44 @@ static void display_task(void * /*pvParameters*/) {
     aircraft_layer_init();
     const bool touch_ok = cst816s_init();
 
-    // Configura o pino do botão físico com Pull-Up interno
-    pinMode(BTN_PIN, INPUT_PULLUP);
+    // Configura os pinos dos botões físicos com Pull-Up interno
+    pinMode(BTN_BOOT_C3, INPUT_PULLUP);
+    pinMode(BTN_BOOT_ALT, INPUT_PULLUP);
 
     Serial.println("[display] LVGL running");
-    Serial.printf("[display] touch=%s | Button GPIO %d ready\n", touch_ok ? "ok" : "offline", BTN_PIN);
+    Serial.printf("[display] touch=%s | Buttons GPIO 9/0 ready\n", touch_ok ? "ok" : "offline");
 
     uint32_t last_btn_ms = 0;
-    bool last_btn_state = HIGH;
+    bool last_btn_state1 = HIGH;
+    bool last_btn_state2 = HIGH;
 
     for (;;) {
         map_background_try_install();
 
-        // 1. Leitura do Botão Físico (GPIO 0)
-        bool btn_state = digitalRead(BTN_PIN);
+        // 1. Leitura dos Botões Físicos (GPIO 9 e GPIO 0)
+        bool btn1 = digitalRead(BTN_BOOT_C3);
+        bool btn2 = digitalRead(BTN_BOOT_ALT);
         const uint32_t now = millis();
 
-        // Quando o botão é pressionado (vai para LOW / 0)
-        if (btn_state == LOW && last_btn_state == HIGH && (now - last_btn_ms > 400)) {
-            last_btn_ms = now;
-            Serial.println("[button] Botao fisico pressionado -> Alternando aeroporto!");
-            switch_next_location();
-        }
-        last_btn_state = btn_state;
-
-        // 2. Leitura opcional do Toque na Tela (mantida caso use o ecrã táctil)
-        int16_t touch_x = 0, touch_y = 0;
-        if (cst816s_poll_tap(&touch_x, &touch_y)) {
-            if (now - last_btn_ms > 600) {
+        if ((btn1 == LOW && last_btn_state1 == HIGH) || (btn2 == LOW && last_btn_state2 == HIGH)) {
+            if (now - last_btn_ms > 400) {
                 last_btn_ms = now;
-                Serial.printf("[touch] Toque em (%d, %d) -> Alternando aeroporto!\n", touch_x, touch_y);
+                Serial.printf("[button] Pressionado (GPIO9=%d, GPIO0=%d) -> Mudando cidade!\n", btn1, btn2);
                 switch_next_location();
             }
         }
+        last_btn_state1 = btn1;
+        last_btn_state2 = btn2;
 
-        lv_timer_handler();           // processa eventos do LVGL
-        aircraft_layer_update();      // atualiza os aviões no ecrã
+        // 2. Toque na tela -> Seleciona a aeronave para ver detalhes
+        int16_t touch_x = 0, touch_y = 0;
+        if (cst816s_poll_tap(&touch_x, &touch_y)) {
+            Serial.printf("[touch] Toque na tela em (%d, %d) -> Selecionando aeronave\n", touch_x, touch_y);
+            aircraft_layer_handle_tap(touch_x, touch_y);
+        }
+
+        lv_timer_handler();           // Processa renderização e menus LVGL
+        aircraft_layer_update();      // Atualiza aviões no radar
         vTaskDelay(pdMS_TO_TICKS(20)); // ~50 fps
     }
 }
@@ -187,7 +190,7 @@ static void network_task(void * /*pvParameters*/) {
                 s_force_map_refetch = false;
                 Serial.printf("[map] Mapa carregado para %s\n", g_location_name);
             } else {
-                Serial.println("[map] Falha no download do mapa, mantendo radar ativo");
+                Serial.println("[map] Falha no mapa, mantendo radar ativo");
                 s_force_map_refetch = false;
             }
         }
@@ -225,7 +228,7 @@ static void network_task(void * /*pvParameters*/) {
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
             if (s_force_map_refetch) {
-                break; // Interrompe o delay de 15s imediatamente ao pressionar o botão
+                break; // Interrompe a espera se o botão for pressionado
             }
             process_route_request_once();
             constexpr uint32_t SLICE_MS = 200;

@@ -11,13 +11,17 @@ extern FlightData g_flights[MAX_FLIGHTS];
 extern size_t g_flight_count;
 extern SemaphoreHandle_t g_flights_mutex;
 
-static lv_obj_t *s_aircraft_canvas = nullptr;
-static lv_color_t *s_canvas_buf = nullptr;
-
 constexpr int16_t CANVAS_WIDTH = 240;
 constexpr int16_t CANVAS_HEIGHT = 240;
 constexpr float CENTER_X = 120.0f;
 constexpr float CENTER_Y = 120.0f;
+
+// Container principal para as aeronaves
+static lv_obj_t *s_aircraft_layer = nullptr;
+
+// Pool de objetos nativos do LVGL para redesenhar os aviões sem estourar a RAM
+static lv_obj_t *s_flight_dots[MAX_FLIGHTS] = {nullptr};
+static lv_obj_t *s_flight_labels[MAX_FLIGHTS] = {nullptr};
 
 // Converte latitude/longitude para coordenadas X, Y no ecrã (240x240)
 static void latlon_to_screen(float lat, float lon, int16_t *out_x, int16_t *out_y) {
@@ -30,98 +34,77 @@ static void latlon_to_screen(float lat, float lon, int16_t *out_x, int16_t *out_
     const float px_per_km = (CANVAS_WIDTH / 2.0f) / RADAR_RADIUS_KM;
 
     *out_x = (int16_t)roundf(CENTER_X + (dx_km * px_per_km));
-    *out_y = (int16_t)roundf(CENTER_Y - (dy_km * px_per_km)); // Inverte Y no ecrã
-}
-
-// Desenha o símbolo do avião no canvas conforme a orientação (heading) e dimensão
-static void draw_aircraft_icon(int16_t x, int16_t y, float heading_deg, int size, lv_color_t color) {
-    if (x < 5 || x >= CANVAS_WIDTH - 5 || y < 5 || y >= CANVAS_HEIGHT - 5) {
-        return; // Fora dos limites visíveis do ecrã redondo
-    }
-
-    const float rad = (heading_deg - 90.0f) * 0.01745329252f;
-    const float cos_a = cosf(rad);
-    const float sin_a = sinf(rad);
-
-    // Desenha o triângulo/vetor apontado na direção da aeronave
-    int16_t x1 = x + (int16_t)(size * cos_a);
-    int16_t y1 = y + (int16_t)(size * sin_a);
-
-    int16_t x2 = x + (int16_t)((size / 2.0f) * cosf(rad + 2.5f));
-    int16_t y2 = y + (int16_t)((size / 2.0f) * sinf(rad + 2.5f));
-
-    int16_t x3 = x + (int16_t)((size / 2.0f) * cosf(rad - 2.5f));
-    int16_t y3 = y + (int16_t)((size / 2.0f) * sinf(rad - 2.5f));
-
-    lv_point_t poly[3] = {
-        {x1, y1},
-        {x2, y2},
-        {x3, y3}
-    };
-
-    lv_draw_line_dsc_t line_dsc;
-    lv_draw_line_dsc_init(&line_dsc);
-    lv_draw_line_dsc_t *dsc = &line_dsc;
-    dsc->color = color;
-    dsc->width = (size > 10) ? 2 : 1;
-
-    // Linhas de contorno da aeronave
-    lv_canvas_draw_line(s_aircraft_canvas, poly, 2, dsc);
-    poly[0] = poly[1]; poly[1] = poly[2];
-    lv_canvas_draw_line(s_aircraft_canvas, poly, 2, dsc);
-    poly[0] = poly[2]; poly[1] = {x1, y1};
-    lv_canvas_draw_line(s_aircraft_canvas, poly, 2, dsc);
+    *out_y = (int16_t)roundf(CENTER_Y - (dy_km * px_per_km));
 }
 
 void aircraft_layer_init() {
-    if (s_aircraft_canvas != nullptr) return;
+    if (s_aircraft_layer != nullptr) return;
 
-    s_canvas_buf = (lv_color_t *)malloc(LV_CANVAS_BUF_SIZE_TRUE_COLOR(CANVAS_WIDTH, CANVAS_HEIGHT));
-    if (!s_canvas_buf) {
-        Serial.println("[aircraft] Falha ao alocar buffer do canvas");
-        return;
+    // Cria um container transparente em cima do radar
+    s_aircraft_layer = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_aircraft_layer, CANVAS_WIDTH, CANVAS_HEIGHT);
+    lv_obj_center(s_aircraft_layer);
+    lv_obj_set_style_bg_opa(s_aircraft_layer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_aircraft_layer, 0, 0);
+    lv_obj_clear_flag(s_aircraft_layer, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Inicializa a pool de pontos e labels leves
+    for (size_t i = 0; i < MAX_FLIGHTS; ++i) {
+        s_flight_dots[i] = lv_obj_create(s_aircraft_layer);
+        lv_obj_set_size(s_flight_dots[i], 8, 8);
+        lv_obj_set_style_radius(s_flight_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(s_flight_dots[i], 0, 0);
+        lv_obj_add_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
+
+        s_flight_labels[i] = lv_label_create(s_aircraft_layer);
+        lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    s_aircraft_canvas = lv_canvas_create(lv_scr_act());
-    lv_canvas_set_buffer(s_aircraft_canvas, s_canvas_buf, CANVAS_WIDTH, CANVAS_HEIGHT, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_center(s_aircraft_canvas);
+    Serial.println("[aircraft] Camada de avioes ultra-leve inicializada com sucesso!");
 }
 
 void aircraft_layer_update() {
-    if (s_aircraft_canvas == nullptr) return;
-
-    // Limpa o canvas para o fundo transparente/preto
-    lv_canvas_fill_bg(s_aircraft_canvas, lv_color_black(), LV_OPA_TRANSP);
-
-    if (g_flights_mutex == nullptr) return;
+    if (s_aircraft_layer == nullptr || g_flights_mutex == nullptr) return;
 
     if (xSemaphoreTake(g_flights_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        for (size_t i = 0; i < g_flight_count; ++i) {
-            const FlightData &f = g_flights[i];
+        for (size_t i = 0; i < MAX_FLIGHTS; ++i) {
+            if (i < g_flight_count) {
+                const FlightData &f = g_flights[i];
 
-            int16_t x = 0, y = 0;
-            latlon_to_screen(f.lat, f.lon, &x, &y);
+                int16_t x = 0, y = 0;
+                latlon_to_screen(f.lat, f.lon, &x, &y);
 
-            // DIFERENCIAÇÃO DE PORTE:
-            // Aviões grandes / comerciais: velocidade > 120 m/s (~233 nós) ou altitude > 3000 metros
-            const bool is_large = (f.speed_mps > 120.0f || f.altitude_m > 3000.0f);
+                // Verifica se está dentro dos limites da tela redonda
+                if (x >= 10 && x <= CANVAS_WIDTH - 10 && y >= 10 && y <= CANVAS_HEIGHT - 10) {
+                    // DIFERENCIAÇÃO DE PORTE
+                    const bool is_large = (f.speed_mps > 120.0f || f.altitude_m > 3000.0f);
 
-            if (is_large) {
-                // AVIÃO GRANDE: Ícone de 14px em Amarelo/Laranja Brilhante
-                draw_aircraft_icon(x, y, f.heading_deg, 14, lv_color_hex(0xFFB000));
-            } else {
-                // AVIÃO PEQUENO / LEVE: Ícone de 8px em Verde/Ciano
-                draw_aircraft_icon(x, y, f.heading_deg, 8, lv_color_hex(0x00FFCD));
+                    // Ajusta tamanho e cor do ponto
+                    int size = is_large ? 12 : 7;
+                    lv_color_t color = is_large ? lv_color_hex(0xFFB000) : lv_color_hex(0x00FFCD);
+
+                    lv_obj_set_size(s_flight_dots[i], size, size);
+                    lv_obj_set_style_bg_color(s_flight_dots[i], color, 0);
+                    lv_obj_set_style_bg_opa(s_flight_dots[i], LV_OPA_COVER, 0);
+                    lv_obj_align(s_flight_dots[i], LV_ALIGN_TOP_LEFT, x - (size / 2), y - (size / 2));
+                    lv_obj_clear_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
+
+                    // Ajusta o Callsign do avião
+                    if (f.callsign[0] != '\0') {
+                        lv_label_set_text(s_flight_labels[i], f.callsign);
+                        lv_obj_set_style_text_color(s_flight_labels[i], color, 0);
+                        lv_obj_align(s_flight_labels[i], LV_ALIGN_TOP_LEFT, x - 15, y + (size / 2) + 2);
+                        lv_obj_clear_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+                    }
+                    continue;
+                }
             }
 
-            // Exibe o Callsign reduzido logo abaixo do ponto do avião
-            if (f.callsign[0] != '\0') {
-                lv_draw_label_dsc_t label_dsc;
-                lv_draw_label_dsc_init(&label_dsc);
-                label_dsc.color = is_large ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x00FFCD);
-                label_dsc.font = LV_FONT_DEFAULT; // Usa a fonte ativa padrão do projeto
-                lv_canvas_draw_text(s_aircraft_canvas, x - 15, y + 6, 40, &label_dsc, f.callsign);
-            }
+            // Oculta pontos não utilizados ou fora da tela
+            lv_obj_add_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
         }
         xSemaphoreGive(g_flights_mutex);
     }
@@ -142,7 +125,7 @@ void aircraft_layer_handle_tap(int16_t touch_x, int16_t touch_y) {
             float dy = (float)(touch_y - ay);
             float dist_sq = (dx * dx) + (dy * dy);
 
-            if (dist_sq < min_dist_sq && dist_sq < 900.0f) { // Raio de toque de ~30px
+            if (dist_sq < min_dist_sq && dist_sq < 900.0f) {
                 min_dist_sq = dist_sq;
                 best_idx = (int)i;
             }

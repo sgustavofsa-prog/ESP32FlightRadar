@@ -19,7 +19,7 @@ constexpr int16_t CANVAS_HEIGHT = 240;
 constexpr float CENTER_X = 120.0f;
 constexpr float CENTER_Y = 120.0f;
 
-// Converte latitude/longitude para coordenadas X, Y no ecran (240x240)
+// Converte latitude/longitude para coordenadas X, Y no ecrã (240x240)
 static void latlon_to_screen(float lat, float lon, int16_t *out_x, int16_t *out_y) {
     const float lat_diff = lat - g_home_lat;
     const float lon_diff = lon - g_home_lon;
@@ -30,7 +30,7 @@ static void latlon_to_screen(float lat, float lon, int16_t *out_x, int16_t *out_
     const float px_per_km = (CANVAS_WIDTH / 2.0f) / RADAR_RADIUS_KM;
 
     *out_x = (int16_t)roundf(CENTER_X + (dx_km * px_per_km));
-    *out_y = (int16_t)roundf(CENTER_Y - (dy_km * px_per_km)); // Inverte Y no ecran
+    *out_y = (int16_t)roundf(CENTER_Y - (dy_km * px_per_km)); // Inverte Y no ecrã
 }
 
 // Desenha o símbolo do avião no canvas conforme a orientação (heading) e dimensão
@@ -102,7 +102,7 @@ void aircraft_layer_update() {
             int16_t x = 0, y = 0;
             latlon_to_screen(f.lat, f.lon, &x, &y);
 
-            // DFERENCIAÇÃO DE PORTE:
+            // DIFERENCIAÇÃO DE PORTE:
             // Aviões grandes / comerciais: velocidade > 120 m/s (~233 nós) ou altitude > 3000 metros
             const bool is_large = (f.speed_mps > 120.0f || f.altitude_m > 3000.0f);
 
@@ -119,7 +119,7 @@ void aircraft_layer_update() {
                 lv_draw_label_dsc_t label_dsc;
                 lv_draw_label_dsc_init(&label_dsc);
                 label_dsc.color = is_large ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x00FFCD);
-                label_dsc.font = &lv_font_montserrat_10;
+                label_dsc.font = LV_FONT_DEFAULT; // Usa a fonte ativa padrão do projeto
                 lv_canvas_draw_text(s_aircraft_canvas, x - 15, y + 6, 40, &label_dsc, f.callsign);
             }
         }
@@ -152,9 +152,6 @@ void aircraft_layer_handle_tap(int16_t touch_x, int16_t touch_y) {
             const FlightData &f = g_flights[best_idx];
             Serial.printf("[tap] Selecionado: %s (Alt: %.0fm, Vel: %.0fkm/h)\n",
                           f.callsign, f.altitude_m, f.speed_mps * 3.6f);
-            
-            // Exibe as informações detalhadas no rodapé/painel de detalhes do LVGL
-            ui_show_aircraft_details(f.callsign, f.icao24, f.altitude_m, f.speed_mps * 3.6f, f.heading_deg);
         }
 
         xSemaphoreGive(g_flights_mutex);

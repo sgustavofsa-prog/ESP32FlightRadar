@@ -19,9 +19,16 @@ constexpr float CENTER_Y = 120.0f;
 // Container principal para as aeronaves
 static lv_obj_t *s_aircraft_layer = nullptr;
 
-// Pool de objetos nativos do LVGL para redesenhar os aviões sem estourar a RAM
-static lv_obj_t *s_flight_dots[MAX_FLIGHTS] = {nullptr};
-static lv_obj_t *s_flight_labels[MAX_FLIGHTS] = {nullptr};
+// Estrutura leve para cada aeronave no ecrã (3 linhas para formar o triângulo do avião + 1 label)
+struct AircraftUI {
+    lv_obj_t *line_left;
+    lv_obj_t *line_right;
+    lv_obj_t *line_base;
+    lv_obj_t *label;
+    lv_point_t pts[4];
+};
+
+static AircraftUI s_aircraft_ui[MAX_FLIGHTS];
 
 // Converte latitude/longitude para coordenadas X, Y no ecrã (240x240)
 static void latlon_to_screen(float lat, float lon, int16_t *out_x, int16_t *out_y) {
@@ -48,19 +55,21 @@ void aircraft_layer_init() {
     lv_obj_set_style_border_width(s_aircraft_layer, 0, 0);
     lv_obj_clear_flag(s_aircraft_layer, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Inicializa a pool de pontos e labels leves
+    // Inicializa os elementos gráficos leves para cada aeronave
     for (size_t i = 0; i < MAX_FLIGHTS; ++i) {
-        s_flight_dots[i] = lv_obj_create(s_aircraft_layer);
-        lv_obj_set_size(s_flight_dots[i], 8, 8);
-        lv_obj_set_style_radius(s_flight_dots[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(s_flight_dots[i], 0, 0);
-        lv_obj_add_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
+        s_aircraft_ui[i].line_left = lv_line_create(s_aircraft_layer);
+        s_aircraft_ui[i].line_right = lv_line_create(s_aircraft_layer);
+        s_aircraft_ui[i].line_base = lv_line_create(s_aircraft_layer);
 
-        s_flight_labels[i] = lv_label_create(s_aircraft_layer);
-        lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_aircraft_ui[i].line_left, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_aircraft_ui[i].line_right, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_aircraft_ui[i].line_base, LV_OBJ_FLAG_HIDDEN);
+
+        s_aircraft_ui[i].label = lv_label_create(s_aircraft_layer);
+        lv_obj_add_flag(s_aircraft_ui[i].label, LV_OBJ_FLAG_HIDDEN);
     }
 
-    Serial.println("[aircraft] Camada de avioes ultra-leve inicializada com sucesso!");
+    Serial.println("[aircraft] Camada com icones de aviao orientados inicializada!");
 }
 
 void aircraft_layer_update() {
@@ -74,37 +83,68 @@ void aircraft_layer_update() {
                 int16_t x = 0, y = 0;
                 latlon_to_screen(f.lat, f.lon, &x, &y);
 
-                // Verifica se está dentro dos limites da tela redonda
+                // Garante que está dentro da área do ecrã
                 if (x >= 10 && x <= CANVAS_WIDTH - 10 && y >= 10 && y <= CANVAS_HEIGHT - 10) {
                     // DIFERENCIAÇÃO DE PORTE
                     const bool is_large = (f.speed_mps > 120.0f || f.altitude_m > 3000.0f);
+                    const float size = is_large ? 12.0f : 7.0f;
+                    const lv_color_t color = is_large ? lv_color_hex(0xFFB000) : lv_color_hex(0x00FFCD);
 
-                    // Ajusta tamanho e cor do ponto
-                    int size = is_large ? 12 : 7;
-                    lv_color_t color = is_large ? lv_color_hex(0xFFB000) : lv_color_hex(0x00FFCD);
+                    // Cálculo da rotação/orientação (Heading) do avião
+                    const float rad = (f.heading_deg - 90.0f) * 0.01745329252f;
+                    const float cos_a = cosf(rad);
+                    const float sin_a = sinf(rad);
 
-                    lv_obj_set_size(s_flight_dots[i], size, size);
-                    lv_obj_set_style_bg_color(s_flight_dots[i], color, 0);
-                    lv_obj_set_style_bg_opa(s_flight_dots[i], LV_OPA_COVER, 0);
-                    lv_obj_align(s_flight_dots[i], LV_ALIGN_TOP_LEFT, x - (size / 2), y - (size / 2));
-                    lv_obj_clear_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
+                    // Ponto frontal (bico do avião)
+                    s_aircraft_ui[i].pts[0].x = x + (int16_t)(size * cos_a);
+                    s_aircraft_ui[i].pts[0].y = y + (int16_t)(size * sin_a);
 
-                    // Ajusta o Callsign do avião
+                    // Asa esquerda
+                    s_aircraft_ui[i].pts[1].x = x + (int16_t)((size * 0.6f) * cosf(rad + 2.3f));
+                    s_aircraft_ui[i].pts[1].y = y + (int16_t)((size * 0.6f) * sinf(rad + 2.3f));
+
+                    // Asa direita
+                    s_aircraft_ui[i].pts[2].x = x + (int16_t)((size * 0.6f) * cosf(rad - 2.3f));
+                    s_aircraft_ui[i].pts[2].y = y + (int16_t)((size * 0.6f) * sinf(rad - 2.3f));
+
+                    // Atualiza as linhas do triângulo/avião
+                    lv_line_set_points(s_aircraft_ui[i].line_left, &s_aircraft_ui[i].pts[0], 2);
+                    lv_line_set_points(s_aircraft_ui[i].line_right, &s_aircraft_ui[i].pts[0], 2); // Usa pts[0] e pts[2] via deslocamento
+                    lv_line_set_points(s_aircraft_ui[i].line_base, &s_aircraft_ui[i].pts[1], 2);
+
+                    // Aplica estilo de cor e espessura
+                    const uint8_t line_w = is_large ? 2 : 1;
+                    
+                    lv_obj_set_style_line_color(s_aircraft_ui[i].line_left, color, 0);
+                    lv_obj_set_style_line_width(s_aircraft_ui[i].line_left, line_w, 0);
+                    lv_obj_clear_flag(s_aircraft_ui[i].line_left, LV_OBJ_FLAG_HIDDEN);
+
+                    lv_obj_set_style_line_color(s_aircraft_ui[i].line_right, color, 0);
+                    lv_obj_set_style_line_width(s_aircraft_ui[i].line_right, line_w, 0);
+                    lv_obj_clear_flag(s_aircraft_ui[i].line_right, LV_OBJ_FLAG_HIDDEN);
+
+                    lv_obj_set_style_line_color(s_aircraft_ui[i].line_base, color, 0);
+                    lv_obj_set_style_line_width(s_aircraft_ui[i].line_base, line_w, 0);
+                    lv_obj_clear_flag(s_aircraft_ui[i].line_base, LV_OBJ_FLAG_HIDDEN);
+
+                    // Atualiza o Callsign abaixo da aeronave
                     if (f.callsign[0] != '\0') {
-                        lv_label_set_text(s_flight_labels[i], f.callsign);
-                        lv_obj_set_style_text_color(s_flight_labels[i], color, 0);
-                        lv_obj_align(s_flight_labels[i], LV_ALIGN_TOP_LEFT, x - 15, y + (size / 2) + 2);
-                        lv_obj_clear_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+                        lv_label_set_text(s_aircraft_ui[i].label, f.callsign);
+                        lv_obj_set_style_text_color(s_aircraft_ui[i].label, color, 0);
+                        lv_obj_align(s_aircraft_ui[i].label, LV_ALIGN_TOP_LEFT, x - 15, y + (int16_t)size + 2);
+                        lv_obj_clear_flag(s_aircraft_ui[i].label, LV_OBJ_FLAG_HIDDEN);
                     } else {
-                        lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+                        lv_obj_add_flag(s_aircraft_ui[i].label, LV_OBJ_FLAG_HIDDEN);
                     }
                     continue;
                 }
             }
 
-            // Oculta pontos não utilizados ou fora da tela
-            lv_obj_add_flag(s_flight_dots[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_flight_labels[i], LV_OBJ_FLAG_HIDDEN);
+            // Oculta os aviões inativos
+            lv_obj_add_flag(s_aircraft_ui[i].line_left, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_aircraft_ui[i].line_right, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_aircraft_ui[i].line_base, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_aircraft_ui[i].label, LV_OBJ_FLAG_HIDDEN);
         }
         xSemaphoreGive(g_flights_mutex);
     }

@@ -132,15 +132,21 @@ static void display_task(void * /*pvParameters*/) {
     Serial.println("[display] LVGL running");
     Serial.printf("[display] touch=%s\n", touch_ok ? "ok" : "offline");
 
+    uint32_t last_touch_ms = 0;
+
     for (;;) {
         map_background_try_install();
 
         int16_t touch_x = 0;
         int16_t touch_y = 0;
         if (cst816s_poll_tap(&touch_x, &touch_y)) {
-            // Touch triggers location switch
-            switch_next_location();
-            aircraft_layer_handle_tap(touch_x, touch_y);
+            const uint32_t now = millis();
+            // Debounce: exige intervalo minimo de 600ms entre toques para mudar a localizacao
+            if (now - last_touch_ms > 600) {
+                last_touch_ms = now;
+                Serial.printf("[touch] Tap detected at (%d, %d) -> Switching location\n", touch_x, touch_y);
+                switch_next_location();
+            }
         }
 
         lv_timer_handler();           // process LVGL events + render dirty areas
@@ -212,7 +218,7 @@ static void network_task(void * /*pvParameters*/) {
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
             if (s_force_map_refetch) {
-                break; // Exit delay immediately when user changes location
+                break; // Interrompe o delay imediatamente ao mudar de localizacao
             }
             process_route_request_once();
             constexpr uint32_t SLICE_MS = 200;

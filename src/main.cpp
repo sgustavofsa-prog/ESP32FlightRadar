@@ -141,10 +141,10 @@ static void display_task(void * /*pvParameters*/) {
         int16_t touch_y = 0;
         if (cst816s_poll_tap(&touch_x, &touch_y)) {
             const uint32_t now = millis();
-            // Debounce: exige intervalo minimo de 600ms entre toques para mudar a localizacao
+            // Debounce: exige intervalo minimo de 600ms para alternar aeroportos
             if (now - last_touch_ms > 600) {
                 last_touch_ms = now;
-                Serial.printf("[touch] Tap detected at (%d, %d) -> Switching location\n", touch_x, touch_y);
+                Serial.printf("[touch] Tap em (%d, %d) -> Mudando localizacao\n", touch_x, touch_y);
                 switch_next_location();
             }
         }
@@ -218,7 +218,7 @@ static void network_task(void * /*pvParameters*/) {
         uint32_t slept_ms = 0;
         while (slept_ms < OPENSKY_FETCH_PERIOD_MS) {
             if (s_force_map_refetch) {
-                break; // Interrompe o delay imediatamente ao mudar de localizacao
+                break; // Exit delay immediately when user changes location
             }
             process_route_request_once();
             constexpr uint32_t SLICE_MS = 200;

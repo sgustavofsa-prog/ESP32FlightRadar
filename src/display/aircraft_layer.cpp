@@ -6,6 +6,7 @@
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
+#include <freertos/semphr.h>
 
 // On-demand route fetch — defined in main.cpp
 extern void set_route_request(const char *icao24, const char *callsign);
@@ -147,7 +148,6 @@ static lv_point_t polar_to_screen(float angle_deg, int radius) {
     return p;
 }
 
-// Atualizado para usar g_home_lat / g_home_lon dinâmicos (permite mudar de aeroporto)
 static lv_point_t flight_to_screen(const FlightData &f) {
     const float lat_off = f.lat - g_home_lat;
     const float lon_off = f.lon - g_home_lon;
@@ -320,7 +320,7 @@ static void detail_panel_show_for_slot(int slot, uint32_t now_ms) {
 
     char line1[48] = {0};
     const bool has_route = (a.departure[0] != '\0' && strncmp(a.departure, "----", 4) != 0
-                          && a.arrival[0] != '\0' && strncmp(a.arrival, "----", 4) != 0);
+                         && a.arrival[0] != '\0' && strncmp(a.arrival, "----", 4) != 0);
     if (has_route) {
         snprintf(line1, sizeof(line1), "DEP %s  ARR %s", a.departure, a.arrival);
     } else {
@@ -526,9 +526,6 @@ void aircraft_layer_update() {
         if (obj_valid(s_aircraft[slot].icon_root)) {
             lv_obj_set_pos(s_aircraft[slot].icon_root, pos.x - (AIRCRAFT_ICON_SIZE / 2), pos.y - (AIRCRAFT_ICON_SIZE / 2));
             if (obj_valid(s_aircraft[slot].icon_img)) {
-                // Aplica rotação e pivô centralizado para o ícone apontar na direção do voo (heading)
-                lv_img_set_pivot(s_aircraft[slot].icon_img, AIRCRAFT_ICON_SIZE / 2, AIRCRAFT_ICON_SIZE / 2);
-                lv_img_set_angle(s_aircraft[slot].icon_img, (int16_t)(f.heading_deg * 10.0f));
                 lv_obj_set_pos(s_aircraft[slot].icon_img, 0, 0);
             }
         }
